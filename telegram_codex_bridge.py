@@ -119,7 +119,7 @@ class TelegramAPI:
         return parsed["result"]
 
     def get_updates(self, offset, timeout):
-        payload = {"timeout": timeout, "allowed_updates": json.dumps(["message"])}
+        payload = {"timeout": timeout, "allowed_updates": json.dumps(["message", "callback_query"])}
         if offset:
             payload["offset"] = offset
         return self.call("getUpdates", payload)
@@ -134,6 +134,29 @@ class TelegramAPI:
             last = self.call("sendMessage", payload)
             time.sleep(0.2)
         return last
+
+    def send_message_with_buttons(self, chat_id, text, buttons, reply_to_message_id=None, max_chars=3500):
+        chunks = split_text(text, max_chars)
+        last = None
+        for index, chunk in enumerate(chunks):
+            payload = {"chat_id": chat_id, "text": chunk}
+            if reply_to_message_id:
+                payload["reply_to_message_id"] = reply_to_message_id
+            if index == len(chunks) - 1:
+                payload["reply_markup"] = json.dumps({"inline_keyboard": buttons}, ensure_ascii=False)
+            last = self.call("sendMessage", payload)
+            time.sleep(0.2)
+        return last
+
+    def answer_callback_query(self, callback_query_id, text=None):
+        payload = {"callback_query_id": callback_query_id}
+        if text:
+            payload["text"] = text
+        return self.call("answerCallbackQuery", payload)
+
+    def edit_message_text(self, chat_id, message_id, text, max_chars=3500):
+        payload = {"chat_id": chat_id, "message_id": message_id, "text": split_text(text, max_chars)[0]}
+        return self.call("editMessageText", payload)
 
     def send_chat_action(self, chat_id, action="typing"):
         return self.call("sendChatAction", {"chat_id": chat_id, "action": action})
@@ -474,6 +497,9 @@ class Bridge:
                     msg = update.get("message")
                     if msg:
                         self.handle_message(msg)
+                    callback = update.get("callback_query")
+                    if callback:
+                        self.handle_callback(callback)
             except KeyboardInterrupt:
                 self.stop.set()
             except (urllib.error.URLError, TimeoutError, RuntimeError) as exc:
@@ -526,9 +552,14 @@ class Bridge:
             code = approval_code(job)
             self.state.setdefault("pending_approvals", {})[code] = job
             save_state(self.config, self.state)
-            self.api.send_message(
+            buttons = [[
+                {"text": "승인", "callback_data": f"approve:{code}"},
+                {"text": "취소", "callback_data": f"deny:{code}"},
+            ]]
+            self.api.send_message_with_buttons(
                 cid,
-                f"이건 파일/앱/전체권한이 필요한 작업으로 보여요.\n진행하려면 /approve {code} 라고 보내주세요. 취소는 /deny {code}.",
+                "이건 파일/앱/전체권한이 필요한 작업으로 보여요.\n진행할까요?",
+                buttons,
                 msg.get("message_id"),
                 self.config["max_message_chars"],
             )
@@ -547,7 +578,7 @@ class Bridge:
         if cmd == "/help":
             self.api.send_message(
                 cid,
-                "/status\n/new [첫 메시지]\n/forget\n/mode chat|queue|resume-last|new\n/full 작업내용\n/approve 코드\n/deny 코드\n/reply 작업내용",
+                "/status\n/new [첫 메시지]\n/forget\n/mode chat|queue|resume-last|new\n/full 작업내용\n/reply 작업내용\n\n권한 승인은 버튼으로 처리돼요.",
                 msg.get("message_id"),
                 self.config["max_message_chars"],
             )
@@ -616,6 +647,56 @@ class Bridge:
                 self.api.send_message(cid, "취소할 대기 작업을 찾지 못했어요.", msg.get("message_id"), self.config["max_message_chars"])
         else:
             self.api.send_message(cid, "알 수 없는 명령. /help", msg.get("message_id"), self.config["max_message_chars"])
+
+    def handle_callback(self, callback):
+        user = callback.get("from") or {}
+        sid = str(user.get("id", ""))
+        if sid not in set(map(str, self.config["allowed_user_ids"])):
+            self.api.answer_callback_query(callback["id"], "권한 없음")
+            return
+        data = callback.get("data") or ""
+        message = callback.get("message") or {}
+        cid = str((message.get("chat") or {}).get("id", ""))
+        message_id = message.get("message_id")
+        action, _, code = data.partition(":")
+        if action not in {"approve", "deny"} or not code:
+            self.api.answer_callback_query(callback["id"], "알 수 없는 동작")
+            return
+
+        pending = self.state.setdefault("pending_approvals", {})
+        job = pending.pop(code, None)
+        if not job:
+            self.api.answer_callback_query(callback["id"], "이미 처리됐거나 만료됨")
+            if cid and message_id:
+                try:
+                    self.api.edit_message_text(cid, message_id, "이미 처리됐거나 만료된 요청이에요.", self.config["max_message_chars"])
+                except Exception:
+                    pass
+            save_state(self.config, self.state)
+            return
+
+        if action == "deny":
+            save_state(self.config, self.state)
+            self.api.answer_callback_query(callback["id"], "취소됨")
+            if cid and message_id:
+                try:
+                    self.api.edit_message_text(cid, message_id, "취소했어요.", self.config["max_message_chars"])
+                except Exception:
+                    pass
+            return
+
+        job["approved_at"] = now_iso()
+        job["approved_by"] = sid
+        job["permission"] = "full"
+        enqueue(self.config, job)
+        self.jobs.put(job)
+        save_state(self.config, self.state)
+        self.api.answer_callback_query(callback["id"], "승인됨")
+        if cid and message_id:
+            try:
+                self.api.edit_message_text(cid, message_id, "승인 확인. 바로 진행할게요.", self.config["max_message_chars"])
+            except Exception:
+                pass
 
     def download_attachments(self, msg):
         paths = []
