@@ -49,7 +49,13 @@ settings for new sessions. Tasks that look like they need broader control, such 
 app control, installation, deletion, file conversion, presentation generation, or audio
 transcription, are held for Telegram approval when `require_approval_for_full` is true.
 
-Approve or cancel a held task by tapping the inline Telegram buttons.
+Approval prompts include a short reason, then inline Telegram buttons:
+
+```text
+PPT generation creates and saves files, so it needs extra approval.
+
+[Approve] [Cancel]
+```
 
 You can also explicitly request a one-off full-permission run:
 

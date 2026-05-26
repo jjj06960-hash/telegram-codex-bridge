@@ -296,11 +296,29 @@ def enqueue(config, job):
         f.write(json.dumps(job, ensure_ascii=False) + "\n")
 
 
-def requested_full_access(config, text, attachments=None):
+def full_access_reason(config, text, attachments=None):
     haystack = text.lower()
     if attachments:
         haystack += " " + " ".join(str(path).lower() for path in attachments)
-    return any(keyword.lower() in haystack for keyword in config.get("full_access_keywords", []))
+    matched = [keyword for keyword in config.get("full_access_keywords", []) if keyword.lower() in haystack]
+    if not matched:
+        return None
+    lower_matches = [m.lower() for m in matched]
+    if any(m in lower_matches for m in ["computer use", "computer-use", "컴퓨터유즈", "컴퓨터 유즈", "화면 조작", "클릭", "앱 열어"]):
+        return "화면이나 앱을 직접 조작할 수 있어서 추가 승인이 필요해요."
+    if any(m in lower_matches for m in ["설치", "삭제", "휴지통", "권한", "전체권한", "full", "bypass"]):
+        return "로컬 파일/시스템에 큰 변경을 줄 수 있는 작업이라 추가 승인이 필요해요."
+    if any(m in lower_matches for m in ["ppt", "powerpoint", "피피티", "프레젠테이션"]):
+        return "PPT 생성은 파일을 만들고 저장하는 작업이라 추가 승인이 필요해요."
+    if any(m in lower_matches for m in ["파일변환", "파일 변환", "변환"]):
+        return "파일을 읽고 새 파일로 변환/저장해야 해서 추가 승인이 필요해요."
+    if any(m in lower_matches for m in ["오디오", "음성", "whisper", "transcribe"]):
+        return "오디오 파일을 읽고 변환 결과를 저장할 수 있어서 추가 승인이 필요해요."
+    return f"요청 안에 고권한 작업 신호({', '.join(matched[:3])})가 있어서 추가 승인이 필요해요."
+
+
+def requested_full_access(config, text, attachments=None):
+    return full_access_reason(config, text, attachments) is not None
 
 
 def approval_code(job):
@@ -542,10 +560,11 @@ class Bridge:
         }
         channel = channel_for_user(self.config, sid)
         log_markdown(self.config, channel, "IN", job, text, attachments)
+        reason = full_access_reason(self.config, text, attachments)
         if (
             self.config.get("require_approval_for_full", True)
             and permission != "full"
-            and requested_full_access(self.config, text, attachments)
+            and reason
             and not force
         ):
             job["permission"] = "full"
@@ -558,7 +577,7 @@ class Bridge:
             ]]
             self.api.send_message_with_buttons(
                 cid,
-                "이건 파일/앱/전체권한이 필요한 작업으로 보여요.\n진행할까요?",
+                f"{reason}\n진행할까요?",
                 buttons,
                 msg.get("message_id"),
                 self.config["max_message_chars"],
