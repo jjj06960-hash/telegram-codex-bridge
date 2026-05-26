@@ -1,0 +1,25 @@
+{
+  "allowed_user_ids": ["123456789"],
+  "allowed_group_ids": ["-1001234567890"],
+  "group_require_mention": false,
+  "mention_patterns": ["@your_bot", "codex"],
+  "codex_path": "codex",
+  "codex_cwd": "/Users/you",
+  "codex_mode": "chat",
+  "queue_path": "/tmp/claude_redis_queue.jsonl",
+  "state_path": "/tmp/telegram_codex_bridge_state.json",
+  "log_dir": "/Users/you/wiki/raw",
+  "attachment_dir": "/Users/you/wiki/raw/telegram/attachments",
+  "redis_result_queue": "claude_result_queue",
+  "poll_timeout_seconds": 30,
+  "max_message_chars": 3500,
+  "send_ack": false,
+  "typing_interval_seconds": 5,
+  "user_channels": {
+    "123456789": "me"
+  },
+  "system_context_files": [
+    "/Users/you/AGENTS.md"
+  ],
+  "daily_ingest_channels": ["me", "telegram"]
+}
