@@ -44,8 +44,8 @@ indicator while Codex works, then sends the answer directly.
 
 ## Permissions
 
-The default permission profile is `write`, which runs Codex locally with write-capable sandbox
-settings for new sessions. Tasks that look like they need broader control, such as computer-use,
+The default permission profile is `write`, which runs Codex locally with `workspace-write`
+sandbox settings for new sessions. Tasks that look like they need broader control, such as computer-use,
 app control, installation, deletion, file conversion, presentation generation, or audio
 transcription, are held for Telegram approval when `require_approval_for_full` is true.
 

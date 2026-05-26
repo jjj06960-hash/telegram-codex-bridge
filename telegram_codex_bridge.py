@@ -329,10 +329,10 @@ def codex_permission_args(permission, resume=False):
     if resume and permission != "full":
         return []
     if permission == "read":
-        return ["-s", "read-only", "-a", "never"]
+        return ["-s", "read-only"]
     if permission == "full":
         return ["--dangerously-bypass-approvals-and-sandbox", "--dangerously-bypass-hook-trust"]
-    return ["-s", "danger-full-access", "-a", "never"]
+    return ["-s", "workspace-write"]
 
 
 def is_image_path(path):
