@@ -34,12 +34,37 @@ You can also point the bridge at an existing env file with `TELEGRAM_CODEX_BRIDG
 - `/mode chat` maps each Telegram chat to its own persistent Codex thread.
 - `/mode queue` logs/enqueues only.
 - `/mode resume-last` sends tasks to the latest Codex session.
+- `/full <text>` runs one task with full local permissions.
+- `/approve <code>` approves a queued full-permission task.
+- `/deny <code>` cancels a queued full-permission task.
 - `/reply <text>` sends text to Codex.
 
 Plain text from allowed users is accepted. Groups can require mention if configured.
 The default mode is `chat`, which is the closest behavior to Claude Code's Telegram bridge.
 Normal messages do not receive a queue-style acknowledgment. The bot shows Telegram's typing
 indicator while Codex works, then sends the answer directly.
+
+## Permissions
+
+The default permission profile is `write`, which runs Codex locally with write-capable sandbox
+settings for new sessions. Tasks that look like they need broader control, such as computer-use,
+app control, installation, deletion, file conversion, presentation generation, or audio
+transcription, are held for Telegram approval when `require_approval_for_full` is true.
+
+Approve a held task with:
+
+```text
+/approve <code>
+```
+
+You can also explicitly request a one-off full-permission run:
+
+```text
+/full make a PowerPoint from this document
+```
+
+Full mode uses Codex's `--dangerously-bypass-approvals-and-sandbox` flag. Keep the Telegram
+allowlist tight.
 
 ## Files
 

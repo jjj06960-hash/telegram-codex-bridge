@@ -35,6 +35,32 @@ DEFAULT_CONFIG = {
     "typing_interval_seconds": 5,
     "user_channels": {},
     "system_context_files": [],
+    "default_permission": "write",
+    "require_approval_for_full": True,
+    "full_access_keywords": [
+        "computer use",
+        "computer-use",
+        "컴퓨터유즈",
+        "컴퓨터 유즈",
+        "화면 조작",
+        "클릭",
+        "앱 열어",
+        "설치",
+        "삭제",
+        "휴지통",
+        "권한",
+        "전체권한",
+        "full",
+        "bypass",
+        "ppt",
+        "powerpoint",
+        "파일변환",
+        "파일 변환",
+        "오디오",
+        "음성",
+        "whisper",
+        "transcribe",
+    ],
 }
 
 
@@ -141,10 +167,11 @@ def split_text(text, max_chars):
 def load_state(config):
     path = Path(config["state_path"])
     if not path.exists():
-        return {"offset": None, "mode": config["codex_mode"], "last_chat_id": None, "sessions": {}}
+        return {"offset": None, "mode": config["codex_mode"], "last_chat_id": None, "sessions": {}, "pending_approvals": {}}
     state = json.loads(path.read_text(encoding="utf-8"))
     state.setdefault("mode", config["codex_mode"])
     state.setdefault("sessions", {})
+    state.setdefault("pending_approvals", {})
     return state
 
 
@@ -246,6 +273,27 @@ def enqueue(config, job):
         f.write(json.dumps(job, ensure_ascii=False) + "\n")
 
 
+def requested_full_access(config, text, attachments=None):
+    haystack = text.lower()
+    if attachments:
+        haystack += " " + " ".join(str(path).lower() for path in attachments)
+    return any(keyword.lower() in haystack for keyword in config.get("full_access_keywords", []))
+
+
+def approval_code(job):
+    return job["job_id"].split("-", 1)[-1]
+
+
+def codex_permission_args(permission, resume=False):
+    if resume and permission != "full":
+        return []
+    if permission == "read":
+        return ["-s", "read-only", "-a", "never"]
+    if permission == "full":
+        return ["--dangerously-bypass-approvals-and-sandbox", "--dangerously-bypass-hook-trust"]
+    return ["-s", "danger-full-access", "-a", "never"]
+
+
 def is_image_path(path):
     return Path(path).suffix.lower() in {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 
@@ -295,20 +343,24 @@ def run_codex(config, state, job, prompt):
     image_args = []
     for path in attachments:
         image_args.extend(["-i", path])
+    permission = job.get("permission", config.get("default_permission", "write"))
 
     existing_thread = chat_session(state, job["chat_id"]).get("thread_id")
     if mode == "chat" and existing_thread:
+        permission_args = codex_permission_args(permission, resume=True)
         cmd = [
             codex,
             "exec",
             "resume",
             "--json",
             "--skip-git-repo-check",
+            *permission_args,
             *image_args,
             existing_thread,
             "-",
         ]
     elif mode == "resume-last":
+        permission_args = codex_permission_args(permission, resume=True)
         cmd = [
             codex,
             "exec",
@@ -316,15 +368,18 @@ def run_codex(config, state, job, prompt):
             "--json",
             "--last",
             "--skip-git-repo-check",
+            *permission_args,
             *image_args,
             "-",
         ]
     else:
+        permission_args = codex_permission_args(permission, resume=False)
         cmd = [
             codex,
             "exec",
             "--json",
             "--skip-git-repo-check",
+            *permission_args,
             "-C",
             cwd,
             *image_args,
@@ -380,6 +435,7 @@ def build_prompt(job):
 - 사용자가 질문에 답한 경우 이전 Telegram 대화 흐름을 이어서 이해한다.
 - job_id, thread_id, queue 같은 내부 구현 용어를 사용자에게 노출하지 않는다.
 - "접수됨", "처리 완료" 같은 티켓/큐 표현을 쓰지 말고 자연스럽게 대화한다.
+- 현재 실행 권한은 `{job.get("permission", "write")}` 이다. Telegram 사용자가 승인한 범위 안에서 작업한다.
 - job_id는 {job["job_id"]} 이다.
 
 로컬 컨텍스트 파일:
@@ -438,6 +494,13 @@ class Bridge:
         if text.startswith("/"):
             self.handle_command(msg, text)
             return
+        self.submit_job(msg, text, attachments)
+
+    def submit_job(self, msg, text, attachments=None, permission=None, force=False):
+        attachments = attachments or []
+        cid = chat_id(msg)
+        sid = sender_id(msg)
+        permission = permission or self.config.get("default_permission", "write")
         job = {
             "type": "execute",
             "job_id": f"tg-{int(time.time())}-{msg['message_id']}",
@@ -449,9 +512,27 @@ class Bridge:
             "attachments": attachments,
             "created_at": now_iso(),
             "system_context_files": self.config.get("system_context_files", []),
+            "permission": permission,
         }
         channel = channel_for_user(self.config, sid)
         log_markdown(self.config, channel, "IN", job, text, attachments)
+        if (
+            self.config.get("require_approval_for_full", True)
+            and permission != "full"
+            and requested_full_access(self.config, text, attachments)
+            and not force
+        ):
+            job["permission"] = "full"
+            code = approval_code(job)
+            self.state.setdefault("pending_approvals", {})[code] = job
+            save_state(self.config, self.state)
+            self.api.send_message(
+                cid,
+                f"이건 파일/앱/전체권한이 필요한 작업으로 보여요.\n진행하려면 /approve {code} 라고 보내주세요. 취소는 /deny {code}.",
+                msg.get("message_id"),
+                self.config["max_message_chars"],
+            )
+            return
         enqueue(self.config, job)
         self.jobs.put(job)
         self.state["last_chat_id"] = cid
@@ -466,15 +547,16 @@ class Bridge:
         if cmd == "/help":
             self.api.send_message(
                 cid,
-                "/status\n/new [첫 메시지]\n/forget\n/mode chat|queue|resume-last|new\n/reply 작업내용",
+                "/status\n/new [첫 메시지]\n/forget\n/mode chat|queue|resume-last|new\n/full 작업내용\n/approve 코드\n/deny 코드\n/reply 작업내용",
                 msg.get("message_id"),
                 self.config["max_message_chars"],
             )
         elif cmd == "/status":
             thread = chat_session(self.state, cid).get("thread_id")
+            pending = len(self.state.get("pending_approvals", {}))
             self.api.send_message(
                 cid,
-                f"mode={self.config['codex_mode']}\nthread={thread or '없음'}\nqueue={self.config['queue_path']}",
+                f"mode={self.config['codex_mode']}\npermission={self.config.get('default_permission', 'write')}\nthread={thread or '없음'}\npending={pending}\nqueue={self.config['queue_path']}",
                 msg.get("message_id"),
                 self.config["max_message_chars"],
             )
@@ -505,6 +587,33 @@ class Bridge:
             fake = dict(msg)
             fake["text"] = text.partition(" ")[2]
             self.handle_message(fake)
+        elif cmd == "/full" and len(parts) >= 2:
+            rest = text.partition(" ")[2].strip()
+            self.submit_job(msg, rest, self.download_attachments(msg), permission="full", force=True)
+        elif cmd == "/approve" and len(parts) >= 2:
+            code = parts[1]
+            pending = self.state.setdefault("pending_approvals", {})
+            job = pending.pop(code, None)
+            if not job:
+                self.api.send_message(cid, "승인 대기 중인 작업을 찾지 못했어요.", msg.get("message_id"), self.config["max_message_chars"])
+                save_state(self.config, self.state)
+                return
+            job["approved_at"] = now_iso()
+            job["approved_by"] = sender_id(msg)
+            job["permission"] = "full"
+            enqueue(self.config, job)
+            self.jobs.put(job)
+            save_state(self.config, self.state)
+            if self.config.get("send_ack"):
+                self.api.send_message(cid, "승인 확인. 바로 진행할게요.", msg.get("message_id"), self.config["max_message_chars"])
+        elif cmd == "/deny" and len(parts) >= 2:
+            code = parts[1]
+            pending = self.state.setdefault("pending_approvals", {})
+            if pending.pop(code, None):
+                save_state(self.config, self.state)
+                self.api.send_message(cid, "취소했어요.", msg.get("message_id"), self.config["max_message_chars"])
+            else:
+                self.api.send_message(cid, "취소할 대기 작업을 찾지 못했어요.", msg.get("message_id"), self.config["max_message_chars"])
         else:
             self.api.send_message(cid, "알 수 없는 명령. /help", msg.get("message_id"), self.config["max_message_chars"])
 

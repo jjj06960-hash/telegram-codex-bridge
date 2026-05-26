@@ -21,5 +21,24 @@
   "system_context_files": [
     "/Users/you/AGENTS.md"
   ],
-  "daily_ingest_channels": ["me", "telegram"]
+  "daily_ingest_channels": ["me", "telegram"],
+  "default_permission": "write",
+  "require_approval_for_full": true,
+  "full_access_keywords": [
+    "computer use",
+    "computer-use",
+    "screen control",
+    "click",
+    "install",
+    "delete",
+    "full",
+    "bypass",
+    "ppt",
+    "powerpoint",
+    "convert file",
+    "audio",
+    "voice",
+    "whisper",
+    "transcribe"
+  ]
 }
